@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+# =============================================================================
+# CUTLASS FP8 Patch for sm_121 (GB10 Blackwell)
+#
+# Problem: vLLM's prebuilt _C.abi3.so has CUTLASS FP8 kernels for sm_120 and
+# sm_120a but NOT sm_121. Calling cutlass_scaled_mm crashes with:
+#   RuntimeError: Error Internal
+#
+# Fix: Force cutlass_fp8_supported() and cutlass_block_fp8_supported() to
+# return False, so vLLM falls back to Triton-based FP8 kernels which compile
+# dynamically for the current GPU.
+#
+# IMPORTANT: Both the FUNCTIONS and the MODULE-LEVEL CONSTANTS must be patched.
+# Multiple callers (fp8.py, compressed_tensors_w8a8_fp8.py, modelopt.py)
+# invoke the functions directly.
+# =============================================================================
+set -euo pipefail
+
+VENV_DIR="${VENV_DIR:-$HOME/vllm-env}"
+TARGET="$VENV_DIR/lib/python3.12/site-packages/vllm/model_executor/layers/quantization/utils/w8a8_utils.py"
+
+if [[ ! -f "$TARGET" ]]; then
+    echo "[ERROR] Target file not found: $TARGET"
+    echo "        Is vLLM installed in $VENV_DIR?"
+    exit 1
+fi
+
+# Back up original
+if [[ ! -f "${TARGET}.orig" ]]; then
+    cp "$TARGET" "${TARGET}.orig"
+    echo "[INFO] Backed up original to ${TARGET}.orig"
+fi
+
+# Patch the functions
+echo "[INFO] Patching cutlass_fp8_supported()..."
+
+python3 << 'PYEOF'
+import re
+import sys
+
+target = sys.argv[1] if len(sys.argv) > 1 else ""
+if not target:
+    # Read from env or default
+    import os
+    venv = os.environ.get("VENV_DIR", os.path.expanduser("~/vllm-env"))
+    target = f"{venv}/lib/python3.12/site-packages/vllm/model_executor/layers/quantization/utils/w8a8_utils.py"
+
+with open(target, 'r') as f:
+    content = f.read()
+
+# Track if we made changes
+changed = False
+
+# Patch cutlass_fp8_supported function
+pattern = r'(def cutlass_fp8_supported\(\)[^:]*:)\n([ \t]+)(?!return False)'
+if re.search(pattern, content):
+    content = re.sub(
+        pattern,
+        r'\1\n\2return False  # Patched: sm_121 not in prebuilt CUTLASS\n\2',
+        content,
+        count=1
+    )
+    changed = True
+    print("[INFO] Patched cutlass_fp8_supported() function")
+elif 'def cutlass_fp8_supported' in content and 'return False  # Patched' in content:
+    print("[INFO] cutlass_fp8_supported() already patched")
+else:
+    print("[WARN] Could not find cutlass_fp8_supported() to patch")
+
+# Patch cutlass_block_fp8_supported function
+pattern = r'(def cutlass_block_fp8_supported\(\)[^:]*:)\n([ \t]+)(?!return False)'
+if re.search(pattern, content):
+    content = re.sub(
+        pattern,
+        r'\1\n\2return False  # Patched: sm_121 not in prebuilt CUTLASS\n\2',
+        content,
+        count=1
+    )
+    changed = True
+    print("[INFO] Patched cutlass_block_fp8_supported() function")
+elif 'def cutlass_block_fp8_supported' in content and 'return False  # Patched' in content:
+    print("[INFO] cutlass_block_fp8_supported() already patched")
+else:
+    print("[WARN] Could not find cutlass_block_fp8_supported() to patch")
+
+# Patch module-level constants
+for const in ['CUTLASS_FP8_SUPPORTED', 'CUTLASS_BLOCK_FP8_SUPPORTED']:
+    # Match lines like: CUTLASS_FP8_SUPPORTED = cutlass_fp8_supported()
+    # or:               CUTLASS_FP8_SUPPORTED = True
+    pattern = rf'^({const})\s*=\s*(?!False\s*#\s*Patched)(.+)$'
+    if re.search(pattern, content, re.MULTILINE):
+        content = re.sub(
+            pattern,
+            rf'\1 = False  # Patched: sm_121 not in prebuilt CUTLASS',
+            content,
+            flags=re.MULTILINE
+        )
+        changed = True
+        print(f"[INFO] Patched {const} constant")
+    elif f'{const} = False  # Patched' in content:
+        print(f"[INFO] {const} already patched")
+
+if changed:
+    with open(target, 'w') as f:
+        f.write(content)
+    print("[OK] Patch applied successfully")
+else:
+    print("[INFO] All patches already applied or file structure unrecognized")
+PYEOF
+
+# Clear bytecode caches
+echo "[INFO] Clearing .pyc caches..."
+find "$VENV_DIR" -name "*.pyc" -path "*/quantization/*" -delete 2>/dev/null || true
+find "$VENV_DIR" -name "__pycache__" -path "*/quantization/*" -exec rm -rf {} + 2>/dev/null || true
+
+echo "[OK] CUTLASS FP8 patch complete"
