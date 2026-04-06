@@ -15,20 +15,28 @@
 # =============================================================================
 set -euo pipefail
 
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-CYAN='\033[0;36m'
-YELLOW='\033[1;33m'
-NC='\033[0m'
-
-info()  { echo -e "${CYAN}[INFO]${NC}  $*"; }
-ok()    { echo -e "${GREEN}[OK]${NC}    $*"; }
-warn()  { echo -e "${YELLOW}[WARN]${NC}  $*"; }
-die()   { echo -e "${RED}[ERROR]${NC} $*"; exit 1; }
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/../lib/common.sh"
 
 if [[ $EUID -ne 0 ]]; then
     die "This script must be run as root (sudo)"
 fi
+
+# Validate IPv4 address format to prevent injection into netplan YAML
+validate_ip() {
+    local ip="$1"
+    if [[ ! "$ip" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+        die "Invalid IP address: $ip"
+    fi
+    # Verify each octet is 0-255
+    local IFS='.'
+    read -ra octets <<< "$ip"
+    for octet in "${octets[@]}"; do
+        if (( octet > 255 )); then
+            die "Invalid IP address (octet > 255): $ip"
+        fi
+    done
+}
 
 # Auto-detect QSFP interfaces (typically enp*np* pattern on DGX Spark)
 detect_qsfp_interfaces() {
@@ -63,6 +71,13 @@ SECONDARY="${QSFP_INTERFACES[1]:-}"
 
 QSFP_IP_PRIMARY="${1:-}"
 QSFP_IP_SECONDARY="${2:-}"
+
+if [[ -n "$QSFP_IP_PRIMARY" ]]; then
+    validate_ip "$QSFP_IP_PRIMARY"
+fi
+if [[ -n "$QSFP_IP_SECONDARY" ]]; then
+    validate_ip "$QSFP_IP_SECONDARY"
+fi
 
 if [[ -z "$QSFP_IP_PRIMARY" ]]; then
     echo ""
@@ -101,6 +116,11 @@ if [[ -n "$SECONDARY" && -n "$QSFP_IP_SECONDARY" ]]; then
         - ${QSFP_IP_SECONDARY}/24
       mtu: 9000
 EOF
+fi
+
+info "Validating netplan configuration..."
+if ! netplan generate 2>&1; then
+    die "Netplan validation failed. Check $NETPLAN_FILE for errors."
 fi
 
 info "Applying netplan configuration..."

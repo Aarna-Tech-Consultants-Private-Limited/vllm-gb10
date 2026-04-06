@@ -16,14 +16,8 @@ NCCL_VERSION="${NCCL_VERSION:-v2.28.9-1}"
 CUDA_HOME="${CUDA_HOME:-/usr/local/cuda}"
 NPROC="${NPROC:-$(nproc)}"
 
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-CYAN='\033[0;36m'
-NC='\033[0m'
-
-info()  { echo -e "${CYAN}[INFO]${NC}  $*"; }
-ok()    { echo -e "${GREEN}[OK]${NC}    $*"; }
-die()   { echo -e "${RED}[ERROR]${NC} $*"; exit 1; }
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/../lib/common.sh"
 
 # Check prerequisites
 [[ -d "$CUDA_HOME" ]] || die "CUDA_HOME not found at $CUDA_HOME. Install CUDA 13.0 first."

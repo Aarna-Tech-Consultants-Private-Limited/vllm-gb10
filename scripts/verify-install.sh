@@ -5,20 +5,17 @@
 # =============================================================================
 set -euo pipefail
 
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-CYAN='\033[0;36m'
-NC='\033[0m'
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/../lib/common.sh"
 
 PASS=0
 FAIL=0
-WARN=0
+WARN_COUNT=0
 
-pass() { echo -e "  ${GREEN}PASS${NC}  $*"; ((PASS++)); }
-fail() { echo -e "  ${RED}FAIL${NC}  $*"; ((FAIL++)); }
-warn() { echo -e "  ${YELLOW}WARN${NC}  $*"; ((WARN++)); }
-info() { echo -e "${CYAN}[CHECK]${NC} $*"; }
+pass()      { echo -e "  ${GREEN}PASS${NC}  $*"; ((PASS++)); }
+fail()      { echo -e "  ${RED}FAIL${NC}  $*"; ((FAIL++)); }
+warn()      { echo -e "  ${YELLOW}WARN${NC}  $*"; ((WARN_COUNT++)); }
+info()      { echo -e "${CYAN}[CHECK]${NC} $*"; }
 
 VENV_DIR="${VENV_DIR:-$HOME/vllm-env}"
 NCCL_DIR="${NCCL_DIR:-$HOME/nccl}"
@@ -121,22 +118,33 @@ info "CUTLASS FP8 patch (Fix 5)"
 
 W8A8_FILE="$VENV_DIR/lib/python3.12/site-packages/vllm/model_executor/layers/quantization/utils/w8a8_utils.py"
 if [[ -f "$W8A8_FILE" ]]; then
-    if grep -q "return False.*# Patched.*sm_121" "$W8A8_FILE" 2>/dev/null; then
-        pass "CUTLASS FP8 functions patched"
+    # Functional check: actually import and call the patched functions
+    FP8_RESULT="$("$VENV_DIR/bin/python" -c 'from vllm.model_executor.layers.quantization.utils.w8a8_utils import cutlass_fp8_supported; print(cutlass_fp8_supported())' 2>/dev/null || echo "IMPORT_ERROR")"
+    if [[ "$FP8_RESULT" == "False" ]]; then
+        pass "cutlass_fp8_supported() returns False"
+    elif [[ "$FP8_RESULT" == "IMPORT_ERROR" ]]; then
+        fail "Could not import cutlass_fp8_supported() (vLLM may not be installed correctly)"
     else
-        fail "CUTLASS FP8 functions NOT patched"
+        fail "cutlass_fp8_supported() returns $FP8_RESULT (expected False)"
     fi
 
-    if grep -q "CUTLASS_FP8_SUPPORTED = False.*# Patched" "$W8A8_FILE" 2>/dev/null; then
-        pass "CUTLASS_FP8_SUPPORTED constant patched"
+    BLOCK_FP8_RESULT="$("$VENV_DIR/bin/python" -c 'from vllm.model_executor.layers.quantization.utils.w8a8_utils import cutlass_block_fp8_supported; print(cutlass_block_fp8_supported())' 2>/dev/null || echo "IMPORT_ERROR")"
+    if [[ "$BLOCK_FP8_RESULT" == "False" ]]; then
+        pass "cutlass_block_fp8_supported() returns False"
+    elif [[ "$BLOCK_FP8_RESULT" == "IMPORT_ERROR" ]]; then
+        fail "Could not import cutlass_block_fp8_supported()"
     else
-        fail "CUTLASS_FP8_SUPPORTED constant NOT patched"
+        fail "cutlass_block_fp8_supported() returns $BLOCK_FP8_RESULT (expected False)"
     fi
 
-    if grep -q "CUTLASS_BLOCK_FP8_SUPPORTED = False.*# Patched" "$W8A8_FILE" 2>/dev/null; then
-        pass "CUTLASS_BLOCK_FP8_SUPPORTED constant patched"
+    # Check module-level constants
+    CONST_RESULT="$("$VENV_DIR/bin/python" -c 'from vllm.model_executor.layers.quantization.utils.w8a8_utils import CUTLASS_FP8_SUPPORTED, CUTLASS_BLOCK_FP8_SUPPORTED; print(CUTLASS_FP8_SUPPORTED, CUTLASS_BLOCK_FP8_SUPPORTED)' 2>/dev/null || echo "IMPORT_ERROR")"
+    if [[ "$CONST_RESULT" == "False False" ]]; then
+        pass "CUTLASS_FP8_SUPPORTED and CUTLASS_BLOCK_FP8_SUPPORTED constants are False"
+    elif [[ "$CONST_RESULT" == "IMPORT_ERROR" ]]; then
+        fail "Could not import CUTLASS FP8 constants"
     else
-        fail "CUTLASS_BLOCK_FP8_SUPPORTED constant NOT patched"
+        fail "CUTLASS FP8 constants are '$CONST_RESULT' (expected 'False False')"
     fi
 else
     fail "w8a8_utils.py not found (is vLLM installed?)"
@@ -181,14 +189,14 @@ done
 # -- Summary -------------------------------------------------------------------
 echo ""
 echo "============================================"
-echo "  Results: ${GREEN}$PASS passed${NC}, ${RED}$FAIL failed${NC}, ${YELLOW}$WARN warnings${NC}"
+echo "  Results: ${GREEN}$PASS passed${NC}, ${RED}$FAIL failed${NC}, ${YELLOW}$WARN_COUNT warnings${NC}"
 echo "============================================"
 echo ""
 
 if [[ $FAIL -gt 0 ]]; then
     echo "Some checks failed. Review the output above and re-run the installer."
     exit 1
-elif [[ $WARN -gt 0 ]]; then
+elif [[ $WARN_COUNT -gt 0 ]]; then
     echo "All critical checks passed. Warnings are informational (some apply only to multi-node setups)."
     exit 0
 else

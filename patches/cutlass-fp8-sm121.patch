@@ -50,6 +50,8 @@ with open(target, 'r') as f:
 
 # Track if we made changes
 changed = False
+already_patched = False
+unrecognized = []
 
 # Patch cutlass_fp8_supported function
 pattern = r'(def cutlass_fp8_supported\(\)[^:]*:)\n([ \t]+)(?!return False)'
@@ -63,8 +65,10 @@ if re.search(pattern, content):
     changed = True
     print("[INFO] Patched cutlass_fp8_supported() function")
 elif 'def cutlass_fp8_supported' in content and 'return False  # Patched' in content:
+    already_patched = True
     print("[INFO] cutlass_fp8_supported() already patched")
 else:
+    unrecognized.append("cutlass_fp8_supported()")
     print("[WARN] Could not find cutlass_fp8_supported() to patch")
 
 # Patch cutlass_block_fp8_supported function
@@ -79,8 +83,10 @@ if re.search(pattern, content):
     changed = True
     print("[INFO] Patched cutlass_block_fp8_supported() function")
 elif 'def cutlass_block_fp8_supported' in content and 'return False  # Patched' in content:
+    already_patched = True
     print("[INFO] cutlass_block_fp8_supported() already patched")
 else:
+    unrecognized.append("cutlass_block_fp8_supported()")
     print("[WARN] Could not find cutlass_block_fp8_supported() to patch")
 
 # Patch module-level constants
@@ -98,14 +104,22 @@ for const in ['CUTLASS_FP8_SUPPORTED', 'CUTLASS_BLOCK_FP8_SUPPORTED']:
         changed = True
         print(f"[INFO] Patched {const} constant")
     elif f'{const} = False  # Patched' in content:
+        already_patched = True
         print(f"[INFO] {const} already patched")
+    else:
+        unrecognized.append(const)
 
 if changed:
     with open(target, 'w') as f:
         f.write(content)
     print("[OK] Patch applied successfully")
+elif already_patched and not unrecognized:
+    print("[INFO] All patches already applied")
 else:
-    print("[INFO] All patches already applied or file structure unrecognized")
+    print(f"[ERROR] File structure unrecognized. Could not patch: {', '.join(unrecognized)}")
+    print("        The vLLM version may have changed w8a8_utils.py layout.")
+    print("        Manual patching may be required.")
+    sys.exit(1)
 PYEOF
 
 # Clear bytecode caches
